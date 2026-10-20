@@ -25,6 +25,7 @@ Vanilla JS Pac-Man MVP (HTML/CSS/Canvas). No dependencies, bundler, tests, linte
 
 - Movement is cell-aligned (`aligned()`, 1e-3 tolerance). `PACMAN_SPEED = 0.125` and `GHOST_SPEED = 0.1` are deliberate: they land exactly on cell centers every 8/10 frames. Arbitrary speeds cause drift and prevent turns.
 - Pac-Man is blocked by walls and the pen door (`3`); ghosts are blocked only by walls, so they can cross the door.
+- Pen release is staggered by `GHOST_RELEASE_MS` (Blinky 0 s, Pinky 5 s, Inky 10 s, Clyde 15 s), measured with the `requestAnimationFrame` timestamp rather than frames. Each ghost is `'waiting'`, `'exiting'` or `'active'`; `resetPositions()` restarts the schedule, and an active ghost that re-enters the pen switches back to `'exiting'`.
 - Tunnels work only on `TUNNEL_ROW` (14); `canMove()` and `wrapTunnel()` must stay in sync when editing maze edges.
 - Coordinates are `{ x: col, y: row }` with origin at the top-left. The maze must stay 28 chars wide and 31 rows tall.
 

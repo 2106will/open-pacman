@@ -12,6 +12,15 @@ const OPPOSITE = { left: 'right', right: 'left', up: 'down', down: 'up' };
 
 const PACMAN_SPEED = 0.125; // 1/8 celda/frame -> alinea cada 8 frames
 const GHOST_SPEED = 0.1;    // 1/10 celda/frame
+const MAX_DT_MS = 100;      // tope de delta para evitar saltos tras una pestaña en segundo plano
+
+// Calendario de salida de la pen, en milisegundos desde el inicio de la ronda.
+const GHOST_RELEASE_MS = {
+  blinky: 0,
+  pinky: 5000,
+  inky: 10000,
+  clyde: 15000,
+};
 
 // Crea una partida nueva. Copia MAZE (pristino) a game.grid para poder comer
 // dots sin destruir el original, y reiniciar.
@@ -29,6 +38,8 @@ function createGame() {
     lives: 3,
     dotsRemaining: dots,
     grid,
+    ghostClockMs: 0,          // tiempo acumulado desde el inicio de la ronda
+    lastTime: performance.now(),
     pacman: {
       x: PACMAN_START.x,
       y: PACMAN_START.y,
@@ -42,6 +53,7 @@ function createGame() {
       dir: 'up',
       speed: GHOST_SPEED,
       kind: g.kind,
+      mode: 'waiting', // espera su turno dentro de la pen
     } ) ),
   };
 }
@@ -116,6 +128,7 @@ const DIR_PRIORITY = [ 'up', 'left', 'down', 'right' ];
 // Zona interior de la pen y puerta de salida.
 const PEN = { x0: 11, x1: 16, y0: 13, y1: 15 };
 const PEN_DOOR = { x: 13, y: 12 };
+const PEN_EXIT_ROW = 11; // fila transitable justo encima de la puerta
 // Esquina de Clyde cuando esta cerca de Pac-Man.
 const CLYDE_CORNER = { x: 1, y: 29 };
 
@@ -123,6 +136,11 @@ function isInPen( g ) {
   const x = Math.round( g.x );
   const y = Math.round( g.y );
   return x >= PEN.x0 && x <= PEN.x1 && y >= PEN.y0 && y <= PEN.y1;
+}
+
+// Celda transitable sobre la puerta mas cercana a la columna actual.
+function exitCell( g ) {
+  return { x: g.x >= 14 ? 14 : 13, y: PEN_EXIT_ROW };
 }
 
 // Celda (entera) que ocupa Pac-Man.
@@ -164,8 +182,9 @@ const GHOST_TARGETS = {
   },
 };
 
-// Objetivo del fantasma: la puerta si esta dentro de la pen; si no, el de
-// su personalidad.
+// Objetivo de un fantasma activo: el de su personalidad. La salida de la pen
+// se resuelve aparte, en moveGhost() con exitCell(); PEN_DOOR queda como red
+// de seguridad por si se consulta estando dentro.
 function ghostTarget( game, g ) {
   if ( isInPen( g ) ) return PEN_DOOR;
   const fn = GHOST_TARGETS[ g.kind ];
@@ -174,9 +193,9 @@ function ghostTarget( game, g ) {
 
 // Elige la direccion valida que mas acerque al objetivo. Los empates se
 // resuelven por DIR_PRIORITY, asi el comportamiento es determinista.
-function chooseDirToward( grid, g, target ) {
+function chooseDirToward( grid, g, target, allowReverse ) {
   const options = DIR_PRIORITY.filter(
-    ( dir ) => dir !== OPPOSITE[ g.dir ] && canMove( grid, g.x, g.y, dir, 'ghost' )
+    ( dir ) => ( allowReverse || dir !== OPPOSITE[ g.dir ] ) && canMove( grid, g.x, g.y, dir, 'ghost' )
   );
   // Sin salida (callejon): permitir el giro de 180.
   if ( !options.length ) return OPPOSITE[ g.dir ];
@@ -201,13 +220,29 @@ function decideGhost( game, g ) {
 }
 
 function moveGhost( game, g ) {
+  // Mientras espera su turno, el fantasma permanece quieto.
+  if ( g.mode === 'waiting' ) {
+    if ( game.ghostClockMs < GHOST_RELEASE_MS[ g.kind ] ) return;
+    g.mode = 'exiting';
+  }
+
+  // Si un fantasma activo vuelve a entrar en la pen, debe salir otra vez.
+  if ( g.mode === 'active' && isInPen( g ) ) g.mode = 'exiting';
+
   const grid = game.grid;
   const width = grid[ 0 ].length;
 
   if ( aligned( g.x ) && aligned( g.y ) ) {
     g.x = Math.round( g.x );
     g.y = Math.round( g.y );
-    decideGhost( game, g );
+    // Al llegar a la fila de salida, deja de usar el objetivo de la pen.
+    if ( g.mode === 'exiting' && g.y <= PEN_EXIT_ROW ) g.mode = 'active';
+    if ( g.mode === 'exiting' ) {
+      // Salida directa a la fila sobre la puerta; puede revertir dentro de la pen.
+      g.dir = chooseDirToward( grid, g, exitCell( g ), true );
+    } else {
+      decideGhost( game, g );
+    }
     if ( !canMove( grid, g.x, g.y, g.dir, 'ghost' ) ) return;
   }
 
@@ -223,10 +258,12 @@ function resetPositions( game ) {
   p.y = PACMAN_START.y;
   p.dir = 'left';
   p.nextDir = null;
+  game.ghostClockMs = 0;
   game.ghosts.forEach( ( g, i ) => {
     g.x = GHOST_STARTS[ i ].x;
     g.y = GHOST_STARTS[ i ].y;
     g.dir = 'up';
+    g.mode = 'waiting';
   } );
 }
 
@@ -234,7 +271,13 @@ function collides( a, b ) {
   return Math.abs( a.x - b.x ) < 0.5 && Math.abs( a.y - b.y ) < 0.5;
 }
 
-function update( game ) {
+function update( game, nowMs ) {
+  // Reloj de la ronda para el calendario de salidas; el movimiento sigue por frame.
+  const now = typeof nowMs === 'number' ? nowMs : performance.now();
+  const dt = Math.min( now - game.lastTime, MAX_DT_MS );
+  game.lastTime = now;
+  game.ghostClockMs += dt;
+
   movePacman( game );
   game.ghosts.forEach( ( g ) => moveGhost( game, g ) );
 
