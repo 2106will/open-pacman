@@ -110,35 +110,94 @@ function movePacman( game ) {
   wrapTunnel( p, width );
 }
 
-function decideGhost( game, g ) {
-  const grid = game.grid;
-  const p = game.pacman;
+// Prioridad fija de desempate, como el arcade original.
+const DIR_PRIORITY = [ 'up', 'left', 'down', 'right' ];
 
-  const options = Object.keys( DIRS ).filter(
+// Zona interior de la pen y puerta de salida.
+const PEN = { x0: 11, x1: 16, y0: 13, y1: 15 };
+const PEN_DOOR = { x: 13, y: 12 };
+// Esquina de Clyde cuando esta cerca de Pac-Man.
+const CLYDE_CORNER = { x: 1, y: 29 };
+
+function isInPen( g ) {
+  const x = Math.round( g.x );
+  const y = Math.round( g.y );
+  return x >= PEN.x0 && x <= PEN.x1 && y >= PEN.y0 && y <= PEN.y1;
+}
+
+// Celda (entera) que ocupa Pac-Man.
+function pacmanCell( game ) {
+  return { x: Math.round( game.pacman.x ), y: Math.round( game.pacman.y ) };
+}
+
+// Objetivos por personalidad. Devuelven una celda de referencia: apuntar a
+// una pared es valido porque solo se usa para medir distancias.
+const GHOST_TARGETS = {
+  // Persigue directo a Pac-Man.
+  blinky: ( game ) => pacmanCell( game ),
+
+  // Apunta 4 celdas por delante de la direccion de Pac-Man.
+  pinky: ( game ) => {
+    const d = DIRS[ game.pacman.dir ] || { x: 0, y: 0 };
+    const cell = pacmanCell( game );
+    return { x: cell.x + d.x * 4, y: cell.y + d.y * 4 };
+  },
+
+  // Flanquea: pivote a 2 celdas por delante de Pac-Man, proyectado desde
+  // Blinky. Si Blinky no existe, usa la celda de Pac-Man como referencia.
+  inky: ( game ) => {
+    const d = DIRS[ game.pacman.dir ] || { x: 0, y: 0 };
+    const cell = pacmanCell( game );
+    const px = cell.x + d.x * 2;
+    const py = cell.y + d.y * 2;
+    const b = game.ghosts.find( ( g ) => g.kind === 'blinky' );
+    const bx = b ? Math.round( b.x ) : cell.x;
+    const by = b ? Math.round( b.y ) : cell.y;
+    return { x: px + ( px - bx ), y: py + ( py - by ) };
+  },
+
+  // Persigue de lejos; a 8 celdas o menos se retira a su esquina.
+  clyde: ( game, g ) => {
+    const cell = pacmanCell( game );
+    const dist = Math.abs( Math.round( g.x ) - cell.x ) + Math.abs( Math.round( g.y ) - cell.y );
+    return dist > 8 ? cell : CLYDE_CORNER;
+  },
+};
+
+// Objetivo del fantasma: la puerta si esta dentro de la pen; si no, el de
+// su personalidad.
+function ghostTarget( game, g ) {
+  if ( isInPen( g ) ) return PEN_DOOR;
+  const fn = GHOST_TARGETS[ g.kind ];
+  return fn ? fn( game, g ) : pacmanCell( game );
+}
+
+// Elige la direccion valida que mas acerque al objetivo. Los empates se
+// resuelven por DIR_PRIORITY, asi el comportamiento es determinista.
+function chooseDirToward( grid, g, target ) {
+  const options = DIR_PRIORITY.filter(
     ( dir ) => dir !== OPPOSITE[ g.dir ] && canMove( grid, g.x, g.y, dir, 'ghost' )
   );
   // Sin salida (callejon): permitir el giro de 180.
-  const choices = options.length ? options : [ '' + OPPOSITE[ g.dir ] ];
+  if ( !options.length ) return OPPOSITE[ g.dir ];
 
-  if ( g.kind === 'hunter' ) {
-    const px = Math.round( p.x );
-    const py = Math.round( p.y );
-    let best = choices[ 0 ];
-    let bestDist = Infinity;
-    for ( const dir of choices ) {
-      const d = DIRS[ dir ];
-      const nx = g.x + d.x;
-      const ny = g.y + d.y;
-      const dist = Math.abs( nx - px ) + Math.abs( ny - py );
-      if ( dist < bestDist ) {
-        bestDist = dist;
-        best = dir;
-      }
+  let best = options[ 0 ];
+  let bestDist = Infinity;
+  for ( const dir of options ) {
+    const d = DIRS[ dir ];
+    const nx = g.x + d.x;
+    const ny = g.y + d.y;
+    const dist = Math.abs( nx - target.x ) + Math.abs( ny - target.y );
+    if ( dist < bestDist ) {
+      bestDist = dist;
+      best = dir;
     }
-    g.dir = best;
-  } else {
-    g.dir = choices[ Math.floor( Math.random() * choices.length ) ];
   }
+  return best;
+}
+
+function decideGhost( game, g ) {
+  g.dir = chooseDirToward( game.grid, g, ghostTarget( game, g ) );
 }
 
 function moveGhost( game, g ) {
